@@ -1,4 +1,4 @@
-# Unsupervised Energy Disaggregation
+# Unsupervised Energy Disaggregation:
 # From Sparse Signal Approximation to Community Detection
 
 This algorithm for now uses the UK-DALE NILM dataset from house 3.
