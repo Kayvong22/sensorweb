@@ -10,3 +10,5 @@ This algorithm consists of 3 steps:
   3) Community detection
 
 Everything in the folder HP-detection is source code from the author. The file Demo.py is my most updated version of my code. I will update it again shortly.
+
+syntheticdata.py is an example of how to create a synthetic dataset of time series length 2000 and then separate and classify type 1 (just on/off) appliances. 
