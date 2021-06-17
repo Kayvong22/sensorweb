@@ -1,34 +1,30 @@
 #! usr/bin/env python3
 # %%
+from numpy.lib.function_base import select
 import pandas as pd
 import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
-from sklearn.linear_model import OrthogonalMatchingPursuit
 import math
 import re
 import time
-import networkx as nx
 import matplotlib.cm as cm
 import dill
-import scipy.optimize as sci
-from multiprocessing import Pool
 import pickle
-from sklearn.cluster import KMeans
-from scipy.cluster.hierarchy import dendrogram, linkage
-from scipy.cluster.hierarchy import cophenet
-from scipy.spatial.distance import pdist
-from scipy.cluster.hierarchy import fcluster
-from sklearn.mixture import GaussianMixture
+import scipy.optimize as sci
 import seaborn as sns
 sns.set()
-from matplotlib.patches import Ellipse
-from statistics import median
+import statistics
 from tslearn.metrics import dtw, soft_dtw
 from tslearn.utils import to_time_series_dataset
 from tslearn.clustering import TimeSeriesKMeans
 from tslearn.preprocessing import TimeSeriesScalerMeanVariance
-
+import dictlearn
+from sklearn.metrics import mean_squared_error
+from scipy import linalg
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
 
 import dill
 def save_pickle(obj,file_name):
@@ -40,38 +36,7 @@ def open_pickle(file_name):
     with open(file_name, 'rb') as handle:
         obj = dill.load(handle)
     return obj
-# %%
-washerdryer = open_pickle('/Users/kayvon/Desktop/washerdryer.pkl')
-dishwasher = open_pickle('/Users/kayvon/Desktop/dishwasher.pkl')
-fridgefreezer = open_pickle('/Users/kayvon/Desktop/fridgefreezer.pkl')
-kettle = open_pickle('/Users/kayvon/Desktop/kettle.pkl')
-microwave = open_pickle('/Users/kayvon/Desktop/microwave.pkl')
 
-dictionary = open_pickle('/Users/kayvon/Desktop/dictionary2000.pkl')
-
-washerdryer = np.array(washerdryer)
-dishwasher = np.array(dishwasher)
-fridgefreezer = np.array(fridgefreezer)
-kettle = np.array(kettle)
-microwave = np.array(microwave)
-
-appliance_dict = {}
-appliance_dict['washerdryer'] = washerdryer
-appliance_dict['dishwasher'] = dishwasher
-appliance_dict['fridgefreezer'] = fridgefreezer
-appliance_dict['kettle'] = kettle
-appliance_dict['microwave'] = microwave
-
-# dictionary_df = pd.DataFrame(dictionary)
-
-# dictionary_df = dictionary_df.T
-# dictionary_df = dictionary_df.reindex(index=dictionary_df.index[::-1])
-
-# dictionary_df = dictionary_df.reset_index(drop=True)
-# dictionary_df = dictionary_df.T
-
-# dictionary2 = dictionary_df.to_numpy(dtype=float)
-# %%
 def norm2(x):
     """Compute a l2-norm."""
     return np.linalg.norm(x) / np.sqrt(len(x))
@@ -349,7 +314,124 @@ def Standardize(x):
     standard_deviation = np.std(x)
 
     return (x - mean) / standard_deviation
+
+def Heaviside(x, a):
+    """Compute a Heaviside function."""
+    y = (np.sign(x - a) + 1) / 2
+    y[y == 0.5] = 0
+    return y
+
+def Boxcar(l, w, t):
+    """Compute a boxcar function.
+
+    Arguments:
+        l -- constant in the interval (non-zero)
+        w -- width of the boxcar, i.e. the internval equal to constant 'l'
+        t -- sequence of the time horizon
+
+    Returns:
+        Vector with the set parameter for the boxcar
+    """
+    a = l - w / 2
+    b = l + w / 2
+
+    if a == b:
+        H = np.zeros(shape=(len(t),), dtype=float)
+        H[a] = 1.0
+
+    else:
+        H = Heaviside(t, a) - Heaviside(t, b)
+
+    return(1 / np.sqrt(w) * H)
+
+def gen_dict2(tslength, infos=False, boxwidth=120):
+    """Generate a dictionary.
+
+    Arguments:
+        tslength: time series length
+        infos: if 'True' return the information about the boxcar boxwidth
+    """
+
+    # Time vector
+    x = np.linspace(1, tslength, tslength)
+
+    # Dictionary matrix
+    X1 = np.eye(tslength)
+    X2 = np.zeros((tslength, tslength), dtype=float)
+    X = np.concatenate((X1, X2), axis=1)
+
+    if tslength < boxwidth:
+        boxwidth = tslength
+
+    #boxcarinfos = np.zeros((tslength * boxwidth, 2), dtype=float)
+
+    for j in range(1, boxwidth):
+        for i in range(1, tslength):
+            X2[:, i] = Boxcar(i, j, x)
+            # boxcarinfos[j,0] = j
+            # boxcarinfos[i,1] = i
+        X = np.concatenate((X, X2), axis=1)
+
+    if not infos:
+        return X
+
+    else:
+        return X, boxcarinfos
+
+def cholesky_omp(D, x, m, eps=None):
+    if eps == None:
+        stopping_condition = lambda: it == m  # len(idx) == m
+    else:
+        stopping_condition = lambda: np.inner(residual, residual) <= eps
+
+    alpha = np.dot(x, D)
+    
+    #first step:        
+    it = 1
+    lam = np.abs(np.dot(x, D)).argmax()
+    idx = [lam]
+    L = np.ones((1,1))
+    gamma = linalg.lstsq(D[:, idx], x)[0]
+    residual = x - np.dot(D[:, idx], gamma)
+    
+    while not stopping_condition():
+        lam = np.abs(np.dot(residual, D)).argmax()
+        w = linalg.solve_triangular(L, np.dot(D[:, idx].T, D[:, lam]),
+                                    lower=True, unit_diagonal=True)
+        # should the diagonal be unit in theory? It crashes without it
+        L = np.r_[np.c_[L, np.zeros(len(L))],
+                  np.atleast_2d(np.append(w, np.sqrt(1 - np.dot(w.T, w))))]
+        idx.append(lam)
+        it += 1
+        #gamma = linalg.solve(np.dot(L, L.T), alpha[idx], sym_pos=True)
+        # what am I, stupid??
+        Ltc = linalg.solve_triangular(L, alpha[idx], lower=True)
+        gamma = linalg.solve_triangular(L, Ltc, trans=1, lower=True)
+        residual = x - np.dot(D[:, idx], gamma)
+
+    return gamma, idx
 # %%
+washerdryer = open_pickle('/Users/kayvon/Desktop/washerdryer.pkl')
+dishwasher = open_pickle('/Users/kayvon/Desktop/dishwasher.pkl')
+fridgefreezer = open_pickle('/Users/kayvon/Desktop/fridgefreezer.pkl')
+kettle = open_pickle('/Users/kayvon/Desktop/kettle.pkl')
+microwave = open_pickle('/Users/kayvon/Desktop/microwave.pkl')
+
+dictionary = open_pickle('/Users/kayvon/Desktop/dictionary2000.pkl')
+
+washerdryer = np.array(washerdryer)
+dishwasher = np.array(dishwasher)
+fridgefreezer = np.array(fridgefreezer)
+kettle = np.array(kettle)
+microwave = np.array(microwave)
+
+appliance_dict = {}
+appliance_dict['washerdryer'] = washerdryer
+appliance_dict['dishwasher'] = dishwasher
+appliance_dict['fridgefreezer'] = fridgefreezer
+appliance_dict['kettle'] = kettle
+appliance_dict['microwave'] = microwave
+
 washerdryer_smooth = np.pad(washerdryer, (0, (2000-len(washerdryer))), 'constant', constant_values=(0))
 dishwasher_smooth = np.pad(dishwasher, (0, (2000-len(dishwasher))), 'constant', constant_values=(0))
 fridgefreezer_smooth = np.pad(fridgefreezer, (0, (2000-len(fridgefreezer))), 'constant', constant_values=(0))
@@ -373,19 +455,19 @@ dishwasher_omp = result['dishwasher'].RecSignal[0:len(appliance_dict['dishwasher
 fridgefreezer_omp = result['fridgefreezer'].RecSignal[0:len(appliance_dict['fridgefreezer'])]
 kettle_omp = result['kettle'].RecSignal[0:len(appliance_dict['kettle'])]
 microwave_omp = result['microwave'].RecSignal[0:len(appliance_dict['microwave'])]
-# %%
+
 half_washer = np.zeros((result['washerdryer'].Kcoef.shape[1],result['washerdryer'].Kcoef.shape[0],1))
 for i in range(result['washerdryer'].Kcoef.shape[1]):
     half_washer[i,:,0] = result['washerdryer'].Kcoef[:,i]
 # half_washer += result['washerdryer'].Kcoef
-# %%
+
 dba_km = TimeSeriesKMeans(n_clusters=2,
                           n_init=2,
                           metric="dtw",
                           verbose=True,
                           max_iter_barycenter=10)
 y_pred = dba_km.fit_predict(half_washer)
-# %%
+
 washer_labels = dba_km.labels_
 summed_washer_clusters = {}
 for g in np.unique(washer_labels):
@@ -436,19 +518,19 @@ for i in noisy.keys():
         print('Dishwasher placement = ' + str(num))
         agg_actual[i][0] = num
     elif i == 'fridgefreezer':
-        for j in range(2):
+        for j in range(1):
             num = np.random.randint(2000-len(noisy[i]))
             agg[num:num+noisy[i].shape[0]] += noisy[i]
             print('Fridge Freezer placement = ' + str(num))
             agg_actual[i][j] = num
     elif i == 'kettle':
-        for k in range(2):
+        for k in range(1):
             num = np.random.randint(2000-len(noisy[i]))
             agg[num:num+noisy[i].shape[0]] += noisy[i]
             print('Kettle placement = ' + str(num))
             agg_actual[i][k] = num
     elif i == 'microwave':
-        for z in range(2):
+        for z in range(1):
             num = np.random.randint(2000-len(noisy[i]))
             agg[num:num+noisy[i].shape[0]] += noisy[i]
             print('Microwave placement = ' + str(num))
@@ -457,181 +539,201 @@ for i in noisy.keys():
 
 ########### PLOT AGGREGATE ############
 plt.plot(agg)
+plt.ylim([0,max(agg)])
 #### TABLE FOR APPLIANCE PLACEMENT ####
 agg_actual
 # %%
-col = ['washerdryer','dishwasher','fridgefreezer','kettle','microwave']
-data = np.zeros((2,len(col)),dtype=int)
-agg_actual = pd.DataFrame(data =data,columns=col)
-
-########## SMOOTH AGGREGATE ###########
-agg =  np.zeros(dictionary.shape[0])
-
-for i in omp_smooth.keys():
-    num = np.random.randint(2000-len(omp_smooth[i]))
-    if i == 'washerdryer':
-        num = np.random.randint(2000-len(omp_smooth[i]))
-        agg[num:num+omp_smooth[i].shape[0]] += omp_smooth[i]
-        print('Washer Dryer placement = ' + str(num))
-        agg_actual[i][0] = num
-    elif i == 'dishwasher':
-        num = np.random.randint(2000-len(omp_smooth[i]))
-        agg[num:num+omp_smooth[i].shape[0]] += omp_smooth[i]
-        print('Dishwasher placement = ' + str(num))
-        agg_actual[i][0] = num
-    elif i == 'fridgefreezer':
-        for j in range(2):
-            num = np.random.randint(2000-len(omp_smooth[i]))
-            agg[num:num+omp_smooth[i].shape[0]] += omp_smooth[i]
-            print('Fridge Freezer placement = ' + str(num))
-            agg_actual[i][j] = num
-    elif i == 'kettle':
-        for k in range(2):
-            num = np.random.randint(2000-len(omp_smooth[i]))
-            agg[num:num+omp_smooth[i].shape[0]] += omp_smooth[i]
-            print('Kettle placement = ' + str(num))
-            agg_actual[i][k] = num
-    elif i == 'microwave':
-        for z in range(2):
-            num = np.random.randint(2000-len(omp_smooth[i]))
-            agg[num:num+omp_smooth[i].shape[0]] += omp_smooth[i]
-            print('Microwave placement = ' + str(num))
-            agg_actual[i][z] = num
-
-########### PLOT AGGREGATE ############
-plt.plot(agg)
-#### TABLE FOR APPLIANCE PLACEMENT ####
-agg_actual
-# %%
-save_pickle(agg, '/Users/kayvon/Desktop/agg4.pkl')
-# %%
-df2 = pd.DataFrame()
-smooth_result = OMP(x=agg, Dictionary=dictionary, dataframe=df2, maxiter=1000, tol=0.02, S=50, threshold_min_power=0)
-# %%
-df1 = pd.DataFrame()
-# result_final = OMP(x=newagg, Dictionary=dictionary, dataframe=df1, maxiter=1000, tol=0.002, S=16, threshold_min_power=0)
-# %%
-########## ACTUAL METHOD ##########
+start_time = time.time()
 df1 = pd.DataFrame()
 result_final = OMP(x=agg, Dictionary=dictionary, dataframe=df1, maxiter=1000, tol=0.002, S=30, threshold_min_power=0)
+print('--- %s seconds ---' % (time.time() - start_time))
 # %%
-plt.plot(result_final.Kcoef);
+agg_df = open_pickle('/Users/kayvon/Desktop/agg_df.pkl')
+agg = agg_df['agg'][0:10000]
 # %%
-# result_final = gamma.dot(dictionary)
+ind = np.where(agg <= min(agg))[0]
+index = [0]
+for i in np.arange(1,len(ind)):
+    if ind[i] - ind[i-1] >= 10:
+        index.append(ind[i])
+index.append(len(agg))
 # %%
-# Before GMM compare each boxcar to each signature and then filter out fridgefreezer,
-# kettle, and microwave. Then with these type 1 appliances taken out do the GMM on the rest
-kettle_index_list = []
-for i in range(result_final.Kcoef.shape[1]):
-    # dtw_score_kettle = dtw(result_final.Kcoef[:,i], kettle_omp)
-    # print('DTW Kettle Score ' + str(i) + '= ' +str(dtw_score_kettle))
-    
-    ind = np.where(result_final.Kcoef[:,i] != 0)
-    start = ind[0][0] - 2
-    end = ind[0][-1] + 2
-    if (len(kettle_omp) - (0.5*len(kettle_omp))) <= (end - start) <= (len(kettle_omp) + (0.5*len(kettle_omp))):
-        # distance_score_kettle = np.linalg.norm(result_final.Kcoef[start:end,i] - kettle_omp)
-        dtw_score_kettle = dtw(result_final.Kcoef[:,i], kettle_omp)
-        print('Kettle DTW Score ' + str(i) + '= ' +str(dtw_score_kettle))
-        if dtw_score_kettle <= 500:
-            kettle_index_list.append(i)
+############### MAIN ITERATION ###############
+selected_boxes = {}
+total_agg_approx = []
+for i in np.arange(1,len(index)):
+    start_time = time.time()
+    dictionary = gen_dict2(tslength=(index[i]-index[i-1]), infos=False, boxwidth=200)
+    print('Length of Dictionary = ' + str(index[i] - index[i-1]))
+    print('--- %s seconds ---' % (time.time() - start_time))
+    start_time1 = time.time()
+    gamma, idx = cholesky_omp(D=dictionary,x=agg[index[i-1]:index[i]],m=30)
+    print('Cholesky OPM Approximated')
+    print('--- %s seconds ---' % (time.time() - start_time1))
+    print(' ')
+    agg_approximated = np.zeros(len(agg[index[i-1]:index[i]]))
+    length = len(selected_boxes)
+    for j in range(len(idx)):
+        temp = np.dot(dictionary[:,idx[j]],gamma[j])
+        agg_approximated += temp
+        selected_boxes[length + j] = temp
+    total_agg_approx.extend(agg_approximated)
+
+# %%
+final_boxes = {}
+final_boxes[0] = []
+cnt = 0
+for i in np.arange(1,len(selected_boxes)):
+    if len(selected_boxes[i]) == len(selected_boxes[i-1]):
+        final_boxes[cnt].append(selected_boxes[i-1])
     else:
-        continue
-
-    # if dtw_score_kettle < 5:
-    #     kettle_index_list.append(i)
-    
-kettle_index_list
+        final_boxes[cnt].append(selected_boxes[i-1])
+        cnt += 1
+        final_boxes[cnt] = []
 # %%
-
-micro_index_list = []
-for i in range(result_final.Kcoef.shape[1]):
-    # dtw_score_kettle = dtw(result_final.Kcoef[:,i], kettle_omp)
-    # print('DTW Kettle Score ' + str(i) + '= ' +str(dtw_score_kettle))
-    
-    ind = np.where(result_final.Kcoef[:,i] != 0)
-    start = ind[0][0] - 2
-    end = ind[0][-1] + 2
-    if (len(microwave_omp) - (0.5*len(microwave_omp))) <= (end - start) <= (len(microwave_omp) + (0.5*len(microwave_omp))):
-        # distance_score_micro = np.linalg.norm(result_final.Kcoef[start:end,i] - microwave_omp)
-        dtw_score_micro = dtw(result_final.Kcoef[:,i], microwave_omp)
-        print('Micro DTW Score ' + str(i) + '= ' +str(dtw_score_micro))
-        if dtw_score_micro <= 300:
-            micro_index_list.append(i)
-    else:
-        continue
-
-    # if dtw_score_kettle < 5:
-    #     kettle_index_list.append(i)
-    
-micro_index_list
+ts_length = 0
+for i in range(len(final_boxes)):
+    ts_length1 = ts_length
+    ts_length += len(final_boxes[i][0])
+    for j in range(len(final_boxes[i])):
+        print(ts_length1)
+        print(ts_length)
+        final_boxes[i][j] = np.pad(final_boxes[i][j], (ts_length1,len(agg)-ts_length), 'constant', constant_values=(0))
 # %%
+df_final_boxes = pd.DataFrame()
+cnt = 0
+for i in range(len(final_boxes)):
+    for j in range(len(final_boxes[i])):
+        df_final_boxes[cnt] = final_boxes[i][j]
+        print(j)
+        cnt += 1
+# %%
+# final_boxes = {}
+# cnt = 0
+# for i in range(len(selected_boxes.keys())-1):
+#     final_boxes[cnt] = []
+#     if len(selected_boxes[i]) == len(selected_boxes[i+1]):
+#         final_boxes[cnt].append(selected_boxes[i])
+#     else:
+#         cnt += 1
+# %%
+agg_boxes = []
+for i in selected_boxes.keys():
+    agg_boxes.extend(selected_boxes[i])
+# %%
+start_time = time.time()
+dictionary = gen_dict2(len(agg), infos=False, boxwidth=200)
+print('--- %s seconds ---' % (time.time() - start_time))
+# %%
+# https://www.cs.technion.ac.il/~ronrubin/Publications/KSVD-OMP-v2.pdf
+# https://gist.github.com/vene/996771
+start_time = time.time()
+gamma, idx = cholesky_omp(D=dictionary,x=agg,m=30)
+print('--- %s seconds ---' % (time.time() - start_time))
 
-fridge_index_list = []
-for i in range(result_final.Kcoef.shape[1]):
-    # dtw_score_kettle = dtw(result_final.Kcoef[:,i], kettle_omp)
-    # print('DTW Kettle Score ' + str(i) + '= ' +str(dtw_score_kettle))
-    
-    ind = np.where(result_final.Kcoef[:,i] != 0)
-    start = ind[0][0] - 2
-    end = ind[0][-1] + 2
-    # if (max(fridgefreezer_omp) - 10) <= max(result_final.Kcoef[:,i]) <= (max(fridgefreezer_omp) + 10):
-    if (len(fridgefreezer_omp) - (0.5*len(fridgefreezer_omp))) <= (end - start) <= (len(fridgefreezer_omp) + (0.5*len(fridgefreezer_omp))):
-        # distance_score_micro = np.linalg.norm(result_final.Kcoef[start:end,i] - microwave_omp)
-        dtw_score_fridge = dtw(result_final.Kcoef[:,i], fridgefreezer_omp)
-        print('Fridge DTW Score ' + str(i) + '= ' +str(dtw_score_fridge))
-        if dtw_score_fridge <= 100:
-            fridge_index_list.append(i)
-    else:
-        continue
+agg_approximated = np.zeros(len(agg))
+selected_boxes = pd.DataFrame()
 
-    # if dtw_score_kettle < 5:
-    #     kettle_index_list.append(i)
-    
-fridge_index_list
+for i in range(len(idx)):
+    temp = np.dot(dictionary[:,idx[i]],gamma[i])
+    agg_approximated += temp
+    selected_boxes[i] = temp
 
+plt.plot(selected_boxes);
+# %%
+# %%
+start_time = time.time()
+sparse_codes = dictlearn.omp_cholesky(agg,dictionary,n_nonzero=30,tol=0.055)
+sparse_approx = dictionary.dot(sparse_codes)
+print('--- %s seconds ---' % (time.time() - start_time))
+#%%
+selected_boxes = pd.DataFrame()
+for i in np.where(sparse_codes[:] != 0)[0]:
+    selected_boxes[i] = np.dot(sparse_codes[i],dictionary[:,i])
+
+plt.plot(selected_boxes);
+
+# %%
+mean_squared_error(agg,total_agg_approx)
+# %%
+mean_squared_error(agg,result_final.RecSignal)
+# %%
+selected_boxes = df_final_boxes
 # %%
 kettles_index_list = []
-for i in range(result_final.Kcoef.shape[1]):
-    dtw_score_kettle = dtw(result_final.Kcoef[:,i], kettle_omp)
-    print('Kettle DTW Score ' + str(i) + '= ' +str(dtw_score_kettle))
-    if dtw_score_kettle < 200:
-        kettles_index_list.append(i)
+for i in range(selected_boxes.shape[1]):
+    dtw_score_kettle = dtw(selected_boxes.iloc[:,i], kettle_omp)
+    # print('Kettle DTW Score ' + str(i) + '= ' +str(dtw_score_kettle))
+    if dtw_score_kettle < 2000:
+        ind = np.where(selected_boxes.iloc[:,i] != 0)
+        start = ind[0][0] - 2
+        end = ind[0][-1] + 2
+        if (len(kettle_omp) - (0.5*len(kettle_omp))) <= (end - start) <= (len(kettle_omp) + (0.5*len(kettle_omp))):
+            dtw_kettle = dtw(selected_boxes.iloc[:,i], kettle_omp)
+            print('Kettle DTW Score ' + str(i) + '= ' +str(dtw_kettle))
+            kettles_index_list.append(i)
+        else:
+            continue
+        # kettles_index_list.append(i)
 kettles_index_list
 # %%
 microwave_index_list = []
-for i in range(result_final.Kcoef.shape[1]):
-    dtw_score_microwave = dtw(result_final.Kcoef[:,i], microwave_omp)
-    print('Microwave DTW Score ' + str(i) + '= ' +str(dtw_score_microwave))
-    if dtw_score_microwave < 200:
-        microwave_index_list.append(i)
+for i in range(selected_boxes.shape[1]):
+    dtw_score_microwave = dtw(selected_boxes.iloc[:,i], microwave_omp)
+    # print('Kettle DTW Score ' + str(i) + '= ' +str(dtw_score_kettle))
+    if dtw_score_microwave < 2000:
+        ind = np.where(selected_boxes.iloc[:,i] != 0)
+        start = ind[0][0]
+        end = ind[0][-1]
+        if ((len(np.where(microwave_omp != 0)[0]) - (0.4*len(np.where(microwave_omp != 0)[0])))
+             <= (end - start) <=
+            (len(np.where(microwave_omp != 0)[0]) + (0.4*len(np.where(microwave_omp != 0)[0])))):
+            print(end - start)
+            dtw_microwave = dtw(selected_boxes.iloc[:,i], microwave_omp)
+            print('Microwave DTW Score ' + str(i) + '= ' +str(dtw_microwave))
+            if dtw_microwave < 370:
+                microwave_index_list.append(i)
+        else:
+            continue
+
 microwave_index_list
 # %%
 fridgefreezer_index_list = []
-for i in range(result_final.Kcoef.shape[1]):
-    dtw_score_fridgefreezer = dtw(result_final.Kcoef[:,i], fridgefreezer_omp)
-    print('Fridge Freezer DTW Score ' + str(i) + '= ' +str(dtw_score_fridgefreezer))
-    if dtw_score_fridgefreezer < 200:
-        fridgefreezer_index_list.append(i)
+for i in range(selected_boxes.shape[1]):
+    dtw_score_fridgefreezer = dtw(selected_boxes.iloc[:,i], fridgefreezer_omp)
+    # print('Kettle DTW Score ' + str(i) + '= ' +str(dtw_score_kettle))
+    if dtw_score_fridgefreezer < 100:
+        ind = np.where(selected_boxes.iloc[:,i] != 0)
+        start = ind[0][0]
+        end = ind[0][-1]
+        if ((len(np.where(fridgefreezer_omp != 0)[0]) - (0.5*len(np.where(fridgefreezer_omp != 0)[0]))) 
+            <= (end - start) <= 
+            (len(np.where(fridgefreezer_omp != 0)[0]) + (0.5*len(np.where(fridgefreezer_omp != 0)[0])))):
+            dtw_fridgefreezer = dtw(selected_boxes.iloc[:,i], fridgefreezer_omp)
+            print('Fridge Freezer DTW Score ' + str(i) + '= ' +str(dtw_fridgefreezer))
+            fridgefreezer_index_list.append(i)
+        else:
+            continue
+
 fridgefreezer_index_list
 # %%
 fig, ax = plt.subplots()
 
 for j in kettles_index_list:
-    ax.plot(result_final.Kcoef[:,j], color='blue', 
+    ax.plot(selected_boxes.iloc[:,j], color='blue', 
     label='Kettle' if j == kettles_index_list[0] else "")
 for i in microwave_index_list:
-    ax.plot(result_final.Kcoef[:,i], color='red', 
+    ax.plot(selected_boxes.iloc[:,i], color='red', 
     label='Microwave' if i == microwave_index_list[0] else "")
 for k in fridgefreezer_index_list:
-    ax.plot(result_final.Kcoef[:,k], color='green', 
+    ax.plot(selected_boxes.iloc[:,k], color='green', 
     label='Fridgefreezer' if k == fridgefreezer_index_list[0] else "")
 
-plt.ylim([0, 4000])
+plt.ylim([0, max(agg)])
 plt.legend()
 plt.show()
 # %%
-indexes = np.arange(0,result_final.Kcoef.shape[1]).tolist()
+indexes = np.arange(0,selected_boxes.shape[1]).tolist()
 type1_indexes = []
 for i in range(len(kettles_index_list)):
     type1_indexes.append(kettles_index_list[i])
@@ -640,41 +742,36 @@ for j in range(len(microwave_index_list)):
 for k in range(len(fridgefreezer_index_list)):
     type1_indexes.append(fridgefreezer_index_list[k])
 
-# %%
+
 for element in type1_indexes:
     if element in indexes:
         indexes.remove(element)
-# %%
+
 fig, ax = plt.subplots()
 for i in indexes:
-    ax.plot(result_final.Kcoef[:,i])
+    ax.plot(selected_boxes.iloc[:,i])
 
-plt.ylim([0,4000])
+plt.ylim([0,max(agg)])
 plt.show()
-# %%
-leftover = np.zeros(2000)
+
+leftover = np.zeros(len(agg))
 for i in indexes:
-    temp = result_final.Kcoef[:,i]
+    temp = selected_boxes.iloc[:,i]
     leftover += temp
 
 fig, ax = plt.subplots()
 
 ax.plot(leftover, label='Leftover')
-plt.ylim([0,4000])
+plt.ylim([0,max(agg)])
 plt.legend()
 plt.show()
 
 # %%
-# fig, ax = plt.subplots()
-
-# ax.plot(result_final.Kcoef)
-# plt.ylim([0,4000])
-# plt.show()
-# %%
-dataset_small = np.zeros((result_final.Kcoef.shape[1],result_final.Kcoef.shape[0],1))
+start_time = time.time()
+dataset_small = np.zeros((selected_boxes.shape[1],selected_boxes.shape[0],1))
 
 for i in indexes:
-    dataset_small[i,:,0] = result_final.Kcoef[:,i]
+    dataset_small[i,:,0] = selected_boxes.iloc[:,i]
 
 # for i in type1_indexes:
 dataset_small = np.delete(dataset_small, type1_indexes, axis=0)
@@ -683,16 +780,19 @@ dba_km1 = TimeSeriesKMeans(n_clusters=3,
                           n_init=3,
                           metric="dtw",
                           verbose=True,
-                          max_iter_barycenter=10)
+                          max_iter_barycenter=10, max_iter=10, n_jobs=-1)
 y_pred = dba_km1.fit_predict(dataset_small)
 
 labels = dba_km1.labels_
 
 cdict = {0: 'red', 1: 'blue', 2: 'green'}
-for i in range(len(dataset_small)):
-    plt.plot(dataset_small[i,:,0], label=labels[i], color=cdict[labels[i]])#'blue' if labels[i] == 1 else 'green')
-    plt.ylim([0,4000])
-    plt.legend()
+for g in np.unique(labels):
+    for i in range(len(dataset_small)):
+        plt.plot(dataset_small[i,:,0], label=labels[i] if labels[i] == g else "", color=cdict[labels[i]])
+        plt.ylim([0,max(agg)])
+        plt.legend()
+
+print('--- %s seconds ---' % (time.time() - start_time))
 # %%
 summed_clusters = {}
 for g in np.unique(labels):
@@ -703,15 +803,15 @@ for g in np.unique(labels):
             # print(np.shape(temp))
             summed_clusters[g] += temp
 
-# %%
+
 dishwasher_index_list = []
 for i in summed_clusters.keys():
     dtw_score_dishwasher = dtw(summed_clusters[i], dishwasher_omp)
     print('DTW Dishwasher Score ' + str(i) + ' = ' +str(dtw_score_dishwasher))
-    if dtw_score_dishwasher < 2000:
+    if dtw_score_dishwasher < 2500:
         dishwasher_index_list.append(i)
-dishwasher_index_list
-# %%
+print(dishwasher_index_list)
+
 for i in summed_clusters.keys():
     if i == dishwasher_index_list:
         plt.plot(summed_clusters[i], color='green', 
@@ -719,7 +819,7 @@ for i in summed_clusters.keys():
     else:
         plt.plot(summed_clusters[i], color='blue', 
         label='Leftover')
-    plt.ylim([0,4000])
+    plt.ylim([0,max(agg)])
     plt.legend()
 # %%
 final_summed_clusters = np.zeros(summed_clusters[0].shape[0])
@@ -728,7 +828,7 @@ for i in summed_clusters.keys():
         continue
     else:
         final_summed_clusters += summed_clusters[i]
-# %%
+
 washer0_start = np.where(summed_washer_clusters[0])[0][0]
 washer1_start = np.where(summed_washer_clusters[1])[0][0]
 
@@ -744,13 +844,11 @@ for i in summed_clusters.keys():
     if dtw_score_washerdryer < 5000:
         washerdryer_index_list.append(i)
 washerdryer_index_list
-# print('I think if under 2000, we can classify it as washer dryer')
 # %%
-# how to also include the smaller parts of the washer dryer signature when finding the initial starting point
 fig, ax = plt.subplots()
 
 ax.plot(final_summed_clusters, color='green', label='Washer Dryer')
-plt.ylim([0,4000])
+plt.ylim([0,max(agg)])
 plt.legend()
 plt.show()
 # %%
@@ -759,13 +857,13 @@ fig, ax = plt.subplots()
 ax.plot(agg,'--')
 
 for j in kettles_index_list:
-    ax.plot(result_final.Kcoef[:,j], color='purple', 
+    ax.plot(selected_boxes.iloc[:,j], color='purple', 
     label='Kettle' if j == kettles_index_list[0] else "")
 for i in microwave_index_list:
-    ax.plot(result_final.Kcoef[:,i], color='red', 
+    ax.plot(selected_boxes.iloc[:,i], color='red', 
     label='Microwave' if i == microwave_index_list[0] else "")
 for k in fridgefreezer_index_list:
-    ax.plot(result_final.Kcoef[:,k], color='green', 
+    ax.plot(selected_boxes.iloc[:,k], color='green', 
     label='Fridgefreezer' if k == fridgefreezer_index_list[0] else "")
 for z in summed_clusters.keys():
     if z == dishwasher_index_list:
@@ -774,27 +872,27 @@ for z in summed_clusters.keys():
     elif z == washerdryer_index_list or z != dishwasher_index_list:
         ax.plot(summed_clusters[z], color='darkorange', label='Washer Dryer' if z == washerdryer_index_list[0] else "")
 
-plt.ylim([0, 4000])
+plt.ylim([0, max(agg)])
 plt.legend()
 plt.show()
 # %%
-
+############# CHECK IF CORRECT ############
 for j in kettles_index_list:
-    location = np.where(result_final.Kcoef[:,j] != 0)
+    location = np.where(selected_boxes.iloc[:,j] != 0)
     loc = location[0][0]
     for i in range(len(agg_actual['kettle'])):
         if (agg_actual['kettle'][i] - 100) < loc < (agg_actual['kettle'][i] + 100):
             print('Kettle True at ' + str(loc))
 
 for j in microwave_index_list:
-    location = np.where(result_final.Kcoef[:,j] != 0)
+    location = np.where(selected_boxes.iloc[:,j] != 0)
     loc = location[0][0]
     for i in range(len(agg_actual['microwave'])):
         if (agg_actual['microwave'][i] - 100) < loc < (agg_actual['microwave'][i] + 100):
             print('Microwave True at ' + str(loc))
 
 for j in fridgefreezer_index_list:
-    location = np.where(result_final.Kcoef[:,j] != 0)
+    location = np.where(selected_boxes.iloc[:,j] != 0)
     loc = location[0][0]
     for i in range(len(agg_actual['fridgefreezer'])):
         if (agg_actual['fridgefreezer'][i] - 100) < loc < (agg_actual['fridgefreezer'][i] + 100):
@@ -817,184 +915,3 @@ for k in washerdryer_index_list:
         print(loc)
 
 agg_actual
-# %%
-import numpy as np
-from ksvd import ApproximateKSVD
-
-
-# X ~ gamma.dot(dictionary)
-X = np.random.randn(1000, 20)
-aksvd = ApproximateKSVD(n_components=20)
-dictionary = aksvd.fit(smooth_result.Kcoef).components_
-gamma = aksvd.transform(smooth_result.Kcoef)
-# %%
-ksvd = gamma.dot(dictionary)
-newagg = np.zeros(ksvd.shape[0])
-for i in range(ksvd.shape[1]):
-    newagg += ksvd[:,i]
-# %%
-import sklearn
-
-import numpy as np
-from sklearn.datasets import make_sparse_coded_signal
-from sklearn.decomposition import DictionaryLearning
-# %%
-X, dictionary, code = make_sparse_coded_signal(n_samples=100, n_components=15, n_features=20, n_nonzero_coefs=10, random_state=42)
-dict_learner = DictionaryLearning(
-    n_components=16, transform_algorithm='lasso_lars')#, random_state=42,)
-X_transformed = dict_learner.fit_transform(result_final.Kcoef)
-# %%
-import numpy as np
-import matplotlib.pyplot as plt
-
-from sklearn.decomposition import SparseCoder
-from sklearn.utils.fixes import np_version, parse_version
-# %%
-
-def ricker_function(resolution, center, width):
-    """Discrete sub-sampled Ricker (Mexican hat) wavelet"""
-    x = np.linspace(0, resolution - 1, resolution)
-    x = ((2 / (np.sqrt(3 * width) * np.pi ** .25))
-         * (1 - (x - center) ** 2 / width ** 2)
-         * np.exp(-(x - center) ** 2 / (2 * width ** 2)))
-    return x
-
-
-def ricker_matrix(width, resolution, n_components):
-    """Dictionary of Ricker (Mexican hat) wavelets"""
-    centers = np.linspace(0, resolution - 1, n_components)
-    D = np.empty((n_components, resolution))
-    for i, center in enumerate(centers):
-        D[i] = ricker_function(resolution, center, width)
-    D /= np.sqrt(np.sum(D ** 2, axis=1))[:, np.newaxis]
-    return D
-
-
-resolution = 2000
-subsampling = 3  # subsampling factor
-width = 100
-n_components = resolution // subsampling
-
-# Compute a wavelet dictionary
-D_fixed = ricker_matrix(width=width, resolution=resolution,
-                        n_components=n_components)
-D_multi = np.r_[tuple(ricker_matrix(width=w, resolution=resolution,
-                      n_components=n_components // 5)
-                for w in (10, 50, 100, 500, 1000))]
-# D_fixed = dictionary.T
-# Generate a signal
-# y = np.linspace(0, resolution - 1, resolution)
-# first_quarter = y < resolution / 4
-# y[first_quarter] = 3.
-# y[np.logical_not(first_quarter)] = -1.
-# %%
-y = agg
-
-# List the different sparse coding methods in the following format:
-# (title, transform_algorithm, transform_alpha,
-#  transform_n_nozero_coefs, color)
-estimators = [('OMP', 'omp', None, 15, 'navy'),
-              ('Lasso', 'lasso_lars', 2, None, 'turquoise'), ]
-lw = 2
-# Avoid FutureWarning about default value change when numpy >= 1.14
-lstsq_rcond = None if np_version >= parse_version('1.14') else -1
-
-plt.figure(figsize=(13, 6))
-for subplot, (D, title) in enumerate(zip((D_fixed, D_multi),
-                                         ('fixed width', 'multiple widths'))):
-    plt.subplot(1, 2, subplot + 1)
-    plt.title('Sparse coding against %s dictionary' % title)
-    plt.plot(y, lw=lw, linestyle='--', label='Original signal')
-    # Do a wavelet approximation
-    for title, algo, alpha, n_nonzero, color in estimators:
-        coder = SparseCoder(dictionary=D, transform_n_nonzero_coefs=n_nonzero,
-                            transform_alpha=alpha, transform_algorithm=algo)
-        x = coder.transform(y.reshape(1, -1))
-        density = len(np.flatnonzero(x))
-        x = np.ravel(np.dot(x, D))
-        squared_error = np.sum((y - x) ** 2)
-        plt.plot(x, color=color, lw=lw,
-                 label='%s: %s nonzero coefs,\n%.2f error'
-                 % (title, density, squared_error))
-        print('Done 1')
-
-    # Soft thresholding debiasing
-    coder = SparseCoder(dictionary=D, transform_algorithm='threshold',
-                        transform_alpha=20)
-    x = coder.transform(y.reshape(1, -1))
-    _, idx = np.where(x != 0)
-    x[0, idx], _, _, _ = np.linalg.lstsq(D[idx, :].T, y, rcond=lstsq_rcond)
-    x = np.ravel(np.dot(x, D))
-    squared_error = np.sum((y - x) ** 2)
-    plt.plot(x, color='darkorange', lw=lw,
-             label='Thresholding w/ debiasing:\n%d nonzero coefs, %.2f error'
-             % (len(idx), squared_error))
-    plt.axis('tight')
-    plt.legend(shadow=False, loc='best')
-plt.subplots_adjust(.04, .07, .97, .90, .09, .2)
-plt.show()
-# %%
-estimators = [('OMP', 'omp', None, 15, 'navy'),
-              ('Lasso', 'lasso_lars', 2, None, 'turquoise'), ]
-
-lw = 2
-# Avoid FutureWarning about default value change when numpy >= 1.14
-lstsq_rcond = None if np_version >= parse_version('1.14') else -1
-
-# plt.figure(figsize=(13, 6))
-# for subplot, (D, title) in enumerate(zip((D_fixed, D_multi),
-#                                          ('fixed width', 'multiple widths'))):
-
-#     plt.subplot(1, 2, subplot + 1)
-#     plt.title('Sparse coding against %s dictionary' % title)
-#     plt.plot(y, lw=lw, linestyle='--', label='Original signal')
-    # Do a wavelet approximation
-for title, algo, alpha, n_nonzero, color in estimators:
-    coder = SparseCoder(dictionary=dictionary.T, transform_n_nonzero_coefs=n_nonzero,
-                        transform_alpha=alpha, transform_algorithm=algo)
-    x = coder.transform(y.reshape(1, -1))
-    density = len(np.flatnonzero(x))
-    x = np.ravel(np.dot(x, dictionary.T))
-    squared_error = np.sum((y - x) ** 2)
-    plt.plot(x, color=color, lw=lw,
-                label='%s: %s nonzero coefs,\n%.2f error'
-                % (title, density, squared_error))
-    print('Done 1')
-# %%
-agg = open_pickle('/Users/kayvon/Desktop/agg3.pkl')
-
-# %%
-lw = 2
-lstsq_rcond = None if np_version >= parse_version('1.14') else -1
-
-    # Soft thresholding debiasing
-coder = SparseCoder(dictionary=dictionary2.T, transform_algorithm='lasso_lars',
-                    transform_alpha=200)
-x = coder.transform(agg.reshape(1, -1))
-_, idx = np.where(x != 0)
-x[0, idx], _, _, _ = np.linalg.lstsq(dictionary2.T[idx, :].T, agg, rcond=lstsq_rcond)
-x = np.ravel(np.dot(x, dictionary2.T))
-squared_error = np.sum((agg - x) ** 2)
-# %%
-plt.plot(x, color='darkorange', lw=lw,
-            label='Thresholding w/ debiasing:\n%d nonzero coefs, %.2f error'
-            % (len(idx), squared_error))
-plt.axis('tight')
-plt.legend(shadow=False, loc='best')
-plt.subplots_adjust(.04, .07, .97, .90, .09, .2)
-plt.show()
-# %%
-dictionary2 = np.zeros((2000,100500))
-cnt = 0
-for i in np.arange(0,402000,4):
-    dictionary2[:,cnt] = dictionary[:,i]
-    cnt += 1
-
-# %%
-dictionary = open_pickle('/Users/kayvon/Desktop/dictionary2000.pkl')
-dictionary_del = dictionary
-
-for i in range(dictionary.shape[1]):
-    if max(dictionary[:,i]) == 0:
-        dictionary_del = np.delete(dictionary, i, axis=1)
-# %%
