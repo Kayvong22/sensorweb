@@ -1,6 +1,8 @@
 #! usr/bin/env python3
 # %%
-from numpy.lib.function_base import select
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -18,13 +20,9 @@ import statistics
 from tslearn.metrics import dtw, soft_dtw
 from tslearn.utils import to_time_series_dataset
 from tslearn.clustering import TimeSeriesKMeans
-from tslearn.preprocessing import TimeSeriesScalerMeanVariance
-import dictlearn
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from scipy import linalg
-import warnings
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-warnings.filterwarnings('ignore', category=UserWarning)
+
 
 import dill
 def save_pickle(obj,file_name):
@@ -548,26 +546,32 @@ df1 = pd.DataFrame()
 result_final = OMP(x=agg, Dictionary=dictionary, dataframe=df1, maxiter=1000, tol=0.002, S=30, threshold_min_power=0)
 print('--- %s seconds ---' % (time.time() - start_time))
 # %%
-agg_df = open_pickle('/Users/kayvon/Desktop/agg_df.pkl')
-agg = agg_df['agg'][0:10000]
+agg_df = open_pickle('/Users/kayvon/Desktop/agg_df2.pkl')
+agg = agg_df['agg'][14452*16+10000:14452*17+10000]
 # %%
-ind = np.where(agg <= min(agg))[0]
+ind = np.where(agg <= min(agg)+50)[0]
 index = [0]
 for i in np.arange(1,len(ind)):
-    if ind[i] - ind[i-1] >= 10:
+    if ind[i] - ind[i-1] >= 50:
         index.append(ind[i])
+index = index[0:len(index)-1]
 index.append(len(agg))
 # %%
+startio = time.time()
+# %%
 ############### MAIN ITERATION ###############
+m = 5 # Number of boxes to stop at
+eps = 0.55
 selected_boxes = {}
 total_agg_approx = []
+tot_start = time.time()
 for i in np.arange(1,len(index)):
     start_time = time.time()
-    dictionary = gen_dict2(tslength=(index[i]-index[i-1]), infos=False, boxwidth=200)
     print('Length of Dictionary = ' + str(index[i] - index[i-1]))
+    dictionary = gen_dict2(tslength=(index[i]-index[i-1]), infos=False, boxwidth=200)
     print('--- %s seconds ---' % (time.time() - start_time))
     start_time1 = time.time()
-    gamma, idx = cholesky_omp(D=dictionary,x=agg[index[i-1]:index[i]],m=30)
+    gamma, idx = cholesky_omp(D=dictionary,x=agg[index[i-1]:index[i]],m=m)
     print('Cholesky OPM Approximated')
     print('--- %s seconds ---' % (time.time() - start_time1))
     print(' ')
@@ -578,34 +582,59 @@ for i in np.arange(1,len(index)):
         agg_approximated += temp
         selected_boxes[length + j] = temp
     total_agg_approx.extend(agg_approximated)
-
+print('--- %s seconds total ---' % (time.time() - tot_start))
 # %%
 final_boxes = {}
 final_boxes[0] = []
 cnt = 0
-for i in np.arange(1,len(selected_boxes)):
-    if len(selected_boxes[i]) == len(selected_boxes[i-1]):
-        final_boxes[cnt].append(selected_boxes[i-1])
+for i in np.arange(1,len(selected_boxes)+1):
+    if i != (len(selected_boxes)):
+        if len(selected_boxes[i]) == len(selected_boxes[i-1]):
+            final_boxes[cnt].append(selected_boxes[i-1])
+        else:
+            final_boxes[cnt].append(selected_boxes[i-1])
+            cnt += 1
+            final_boxes[cnt] = []
     else:
         final_boxes[cnt].append(selected_boxes[i-1])
-        cnt += 1
-        final_boxes[cnt] = []
+#%%
+import copy
+final_boxes1 = copy.deepcopy(final_boxes)
 # %%
+# save_pickle(final_boxes, '/Users/kayvon/Desktop/final_boxes_test2.pkl')
+# final_boxes = open_pickle('/Users/kayvon/Desktop/final_boxes_test2.pkl')
+# final_boxes1 = open_pickle('/Users/kayvon/Desktop/final_boxes_test2.pkl')
+# %%
+
 ts_length = 0
-for i in range(len(final_boxes)):
+for i in range(len(final_boxes1)):
     ts_length1 = ts_length
-    ts_length += len(final_boxes[i][0])
-    for j in range(len(final_boxes[i])):
-        print(ts_length1)
-        print(ts_length)
-        final_boxes[i][j] = np.pad(final_boxes[i][j], (ts_length1,len(agg)-ts_length), 'constant', constant_values=(0))
+    ts_length += len(final_boxes1[i][0])
+    for j in range(len(final_boxes1[i])):
+        final_boxes1[i][j] = np.pad(final_boxes1[i][j], (ts_length1,len(agg)-ts_length), 'constant', constant_values=(0))
+        # print(ts_length)
+
+df_final_boxes_full_length = pd.DataFrame()
+cnt = 0
+for i in range(len(final_boxes1)):
+    for j in range(len(final_boxes1[i])):
+        df_final_boxes_full_length[cnt] = final_boxes1[i][j]
+        cnt += 1
 # %%
+lens = []
+for i in range(len(final_boxes)):
+    lens.append(len(final_boxes[i][0]))
+(max(lens))
+
+for i in range(len(final_boxes)):
+    for j in range(len(final_boxes[i])):
+        final_boxes[i][j] = np.pad(final_boxes[i][j],(0,(max(lens)-len(final_boxes[i][j]))),'constant', constant_values=(0))
+
 df_final_boxes = pd.DataFrame()
 cnt = 0
 for i in range(len(final_boxes)):
     for j in range(len(final_boxes[i])):
         df_final_boxes[cnt] = final_boxes[i][j]
-        print(j)
         cnt += 1
 # %%
 # final_boxes = {}
@@ -671,7 +700,8 @@ for i in range(selected_boxes.shape[1]):
         if (len(kettle_omp) - (0.5*len(kettle_omp))) <= (end - start) <= (len(kettle_omp) + (0.5*len(kettle_omp))):
             dtw_kettle = dtw(selected_boxes.iloc[:,i], kettle_omp)
             print('Kettle DTW Score ' + str(i) + '= ' +str(dtw_kettle))
-            kettles_index_list.append(i)
+            if dtw_kettle < 460:
+                kettles_index_list.append(i)
         else:
             continue
         # kettles_index_list.append(i)
@@ -685,13 +715,13 @@ for i in range(selected_boxes.shape[1]):
         ind = np.where(selected_boxes.iloc[:,i] != 0)
         start = ind[0][0]
         end = ind[0][-1]
-        if ((len(np.where(microwave_omp != 0)[0]) - (0.4*len(np.where(microwave_omp != 0)[0])))
+        if ((len(np.where(microwave_omp != 0)[0]) - (0.7*len(np.where(microwave_omp != 0)[0])))
              <= (end - start) <=
-            (len(np.where(microwave_omp != 0)[0]) + (0.4*len(np.where(microwave_omp != 0)[0])))):
+            (len(np.where(microwave_omp != 0)[0]) + (0.7*len(np.where(microwave_omp != 0)[0])))):
             print(end - start)
             dtw_microwave = dtw(selected_boxes.iloc[:,i], microwave_omp)
             print('Microwave DTW Score ' + str(i) + '= ' +str(dtw_microwave))
-            if dtw_microwave < 370:
+            if dtw_microwave < 500:
                 microwave_index_list.append(i)
         else:
             continue
@@ -706,9 +736,9 @@ for i in range(selected_boxes.shape[1]):
         ind = np.where(selected_boxes.iloc[:,i] != 0)
         start = ind[0][0]
         end = ind[0][-1]
-        if ((len(np.where(fridgefreezer_omp != 0)[0]) - (0.5*len(np.where(fridgefreezer_omp != 0)[0]))) 
+        if ((len(np.where(fridgefreezer_omp != 0)[0]) - (0.7*len(np.where(fridgefreezer_omp != 0)[0]))) 
             <= (end - start) <= 
-            (len(np.where(fridgefreezer_omp != 0)[0]) + (0.5*len(np.where(fridgefreezer_omp != 0)[0])))):
+            (len(np.where(fridgefreezer_omp != 0)[0]) + (0.7*len(np.where(fridgefreezer_omp != 0)[0])))):
             dtw_fridgefreezer = dtw(selected_boxes.iloc[:,i], fridgefreezer_omp)
             print('Fridge Freezer DTW Score ' + str(i) + '= ' +str(dtw_fridgefreezer))
             fridgefreezer_index_list.append(i)
@@ -746,25 +776,25 @@ for k in range(len(fridgefreezer_index_list)):
 for element in type1_indexes:
     if element in indexes:
         indexes.remove(element)
+# %%
+# fig, ax = plt.subplots()
+# for i in indexes:
+#     ax.plot(selected_boxes.iloc[:,i])
 
-fig, ax = plt.subplots()
-for i in indexes:
-    ax.plot(selected_boxes.iloc[:,i])
+# plt.ylim([0,max(agg)])
+# plt.show()
 
-plt.ylim([0,max(agg)])
-plt.show()
+# leftover = np.zeros(len(agg))
+# for i in indexes:
+#     temp = selected_boxes.iloc[:,i]
+#     leftover += temp
 
-leftover = np.zeros(len(agg))
-for i in indexes:
-    temp = selected_boxes.iloc[:,i]
-    leftover += temp
+# fig, ax = plt.subplots()
 
-fig, ax = plt.subplots()
-
-ax.plot(leftover, label='Leftover')
-plt.ylim([0,max(agg)])
-plt.legend()
-plt.show()
+# ax.plot(leftover, label='Leftover')
+# plt.ylim([0,max(agg)])
+# plt.legend()
+# plt.show()
 
 # %%
 start_time = time.time()
@@ -773,61 +803,158 @@ dataset_small = np.zeros((selected_boxes.shape[1],selected_boxes.shape[0],1))
 for i in indexes:
     dataset_small[i,:,0] = selected_boxes.iloc[:,i]
 
-# for i in type1_indexes:
+df_dataset_small = pd.DataFrame(dataset_small[:,:,0])
+df_dataset_small = df_dataset_small.drop(type1_indexes, axis=0)
+df_dataset_small = df_dataset_small.reset_index(drop=False)
+
 dataset_small = np.delete(dataset_small, type1_indexes, axis=0)
 
+
+# %%
 dba_km1 = TimeSeriesKMeans(n_clusters=3,
-                          n_init=3,
+                          n_init=2,
                           metric="dtw",
                           verbose=True,
-                          max_iter_barycenter=10, max_iter=10, n_jobs=-1)
+                          max_iter_barycenter=10, n_jobs=-1)
 y_pred = dba_km1.fit_predict(dataset_small)
 
 labels = dba_km1.labels_
 
+print('--- %s seconds ---' % (time.time() - start_time))
+# %%
 cdict = {0: 'red', 1: 'blue', 2: 'green'}
 for g in np.unique(labels):
     for i in range(len(dataset_small)):
         plt.plot(dataset_small[i,:,0], label=labels[i] if labels[i] == g else "", color=cdict[labels[i]])
-        plt.ylim([0,max(agg)])
+        plt.ylim([-2000,max(agg)])
         plt.legend()
+# %%
+# right after labeling go back with indexes and find actual positions of 
+# boxes for dishwasher index list so that the boxes arent on top of each other
 
-print('--- %s seconds ---' % (time.time() - start_time))
+clusters = {}
+for g in np.unique(labels):
+    clusters[g] = []
+    clusters[g].append(np.where(labels==g)[0])
+# %%
+cluster0 = []
+cluster1 = []
+cluster2 = []
+for i in clusters.keys():
+    if i == 0:
+        for j in range(len(clusters[i][0])):
+            position = df_dataset_small.iloc[clusters[i][0][j],0]
+            cluster0.append(position)
+    if i == 1:
+        for j in range(len(clusters[i][0])):
+            position = df_dataset_small.iloc[clusters[i][0][j],0]
+            cluster1.append(position)
+    if i == 2:
+        for j in range(len(clusters[i][0])):
+            position = df_dataset_small.iloc[clusters[i][0][j],0]
+            cluster2.append(position)        
 # %%
 summed_clusters = {}
 for g in np.unique(labels):
-    summed_clusters[g] = np.zeros(dataset_small.shape[1])
-    for l in np.where(labels == g):
-        for i in range(len(l)):
-            temp = dataset_small[l[i],:,0]
-            # print(np.shape(temp))
-            summed_clusters[g] += temp
+    if g == 0:
+        summed_clusters[g] = np.zeros(df_final_boxes_full_length.shape[0])
+        for i in range(len(cluster0)):
+            temp = df_final_boxes_full_length.iloc[:,cluster0[i]]
+            if i == 0:
+                summed_clusters[g] += temp
+            else:
+                if np.where(abs(temp) > 0)[0][-1] - np.where(abs(summed_clusters[g]) > 0)[0][-1] < 1000:
+                    summed_clusters[g] += temp
+                else:
+                    continue
+        if len(np.where(summed_clusters[g] > 0)[0]) < 100:
+            summed_clusters[g] = np.zeros(df_final_boxes_full_length.shape[0])
+            for i in range(len(cluster0)):
+                temp = df_final_boxes_full_length.iloc[:,cluster0[i]]
+                summed_clusters[g] += temp
 
+    if g == 1:
+        summed_clusters[g] = np.zeros(df_final_boxes_full_length.shape[0])
+        for i in range(len(cluster1)):
+            temp = df_final_boxes_full_length.iloc[:,cluster1[i]]
+            if i == 0:
+                summed_clusters[g] += temp
+            else:
+                # print(np.where(abs(temp)>0)[0])
+                # print(np.where(summed_clusters[g]>0)[0])
+                # print(i)
+                if np.where(abs(temp) > 0)[0][-1] - np.where(abs(summed_clusters[g]) > 0)[0][-1] < 1000:
+                    summed_clusters[g] += temp
+                else:
+                    continue
+        if len(np.where(summed_clusters[g] > 0)[0]) < 100:
+            summed_clusters[g] = np.zeros(df_final_boxes_full_length.shape[0])
+            for i in np.arange(1,len(cluster1)):
+                temp = df_final_boxes_full_length.iloc[:,cluster1[i]]
+                summed_clusters[g] += temp
 
+    if g == 2:
+        summed_clusters[g] = np.zeros(df_final_boxes_full_length.shape[0])
+        for i in range(len(cluster2)):
+            temp = df_final_boxes_full_length.iloc[:,cluster2[i]]
+            if i == 0:
+                summed_clusters[g] += temp
+            else:
+                if np.where(abs(temp) > 0)[0][-1] - np.where(abs(summed_clusters[g]) > 0)[0][-1] < 1000:
+                    summed_clusters[g] += temp
+                else:
+                    continue
+        if len(np.where(summed_clusters[g] > 0)[0]) < 100:
+            summed_clusters[g] = np.zeros(df_final_boxes_full_length.shape[0])
+            for i in range(len(cluster2)):
+                temp = df_final_boxes_full_length.iloc[:,cluster2[i]]
+                summed_clusters[g] += temp
+
+# %%
+# summed_clusters = {}
+# for g in np.unique(labels):
+#     summed_clusters[g] = np.zeros(dataset_small.shape[1])
+#     for l in np.where(labels == g):
+#         for i in range(len(l)):
+#             temp = dataset_small[l[i],:,0]
+#             # print(np.shape(temp))
+#             summed_clusters[g] += temp
+
+# %%
 dishwasher_index_list = []
 for i in summed_clusters.keys():
     dtw_score_dishwasher = dtw(summed_clusters[i], dishwasher_omp)
     print('DTW Dishwasher Score ' + str(i) + ' = ' +str(dtw_score_dishwasher))
     if dtw_score_dishwasher < 2500:
         dishwasher_index_list.append(i)
+
 print(dishwasher_index_list)
 
-for i in summed_clusters.keys():
-    if i == dishwasher_index_list:
-        plt.plot(summed_clusters[i], color='green', 
-        label='Dishwasher')
-    else:
-        plt.plot(summed_clusters[i], color='blue', 
-        label='Leftover')
-    plt.ylim([0,max(agg)])
-    plt.legend()
+if len(dishwasher_index_list) != 0:
+    dishwasher_index_list_final = []
+    if dishwasher_index_list[0] == 0:
+        dishwasher_index_list_final.extend(cluster0)
+    if dishwasher_index_list[0] == 1:
+        dishwasher_index_list_final.extend(cluster1)
+    if dishwasher_index_list[0] == 2:
+        dishwasher_index_list_final.extend(cluster2)
+
+    for i in summed_clusters.keys():
+        if i == dishwasher_index_list:
+            plt.plot(summed_clusters[i], color='green', 
+            label='Dishwasher')
+        else:
+            plt.plot(summed_clusters[i], color='blue', 
+            label='Leftover')
+        plt.ylim([0,max(agg)])
+        plt.legend()
 # %%
-final_summed_clusters = np.zeros(summed_clusters[0].shape[0])
-for i in summed_clusters.keys():
-    if i == dishwasher_index_list:
-        continue
-    else:
-        final_summed_clusters += summed_clusters[i]
+# final_summed_clusters = np.zeros(summed_clusters[0].shape[0])
+# for i in summed_clusters.keys():
+#     if i == dishwasher_index_list:
+#         continue
+#     else:
+#         final_summed_clusters += summed_clusters[i]
 
 washer0_start = np.where(summed_washer_clusters[0])[0][0]
 washer1_start = np.where(summed_washer_clusters[1])[0][0]
@@ -843,14 +970,63 @@ for i in summed_clusters.keys():
     print('Washer Dryer DTW Score ' + str(i) + ' = ' +str(dtw_score_washerdryer))
     if dtw_score_washerdryer < 5000:
         washerdryer_index_list.append(i)
-washerdryer_index_list
+print(washerdryer_index_list)
+
+if len(washerdryer_index_list) != 0:
+    washerdryer_index_list_final = []
+    if washerdryer_index_list[0] == 0:
+        washerdryer_index_list_final.extend(cluster0)
+    if washerdryer_index_list[0] == 1:
+        washerdryer_index_list_final.extend(cluster1)
+    if washerdryer_index_list[0] == 2:
+        washerdryer_index_list_final.extend(cluster2)
+# %%
+print('--- %s seconds ---' % (time.time() - startio))
+# %%
+for j in [0,-1]:
+    for i in dishwasher_index_list_final:
+        print(np.where(df_final_boxes_full_length.iloc[:,i]>=100)[0][0])
+print(np.where(agg_df['dishwasher'][14452*5+10000:14452*6+10000]>=100)[0][0])
 # %%
 fig, ax = plt.subplots()
 
-ax.plot(final_summed_clusters, color='green', label='Washer Dryer')
+ax.plot(summed_clusters[washerdryer_index_list[0]], color='green', label='Washer Dryer')
 plt.ylim([0,max(agg)])
 plt.legend()
 plt.show()
+# %%
+# %%
+kettles = np.zeros(df_final_boxes_full_length.shape[0])
+for i in kettles_index_list:
+    kettles += (df_final_boxes_full_length.iloc[:,i])
+# %%
+microwaves = np.zeros(df_final_boxes_full_length.shape[0])
+for i in microwave_index_list:
+    microwaves += (df_final_boxes_full_length.iloc[:,i])
+
+# %%
+fridges = np.zeros(df_final_boxes_full_length.shape[0])
+for i in fridgefreezer_index_list:
+    fridges += (df_final_boxes_full_length.iloc[:,i])
+
+# %%
+
+# %%
+mean_absolute_error(agg_df['washerdryer'][14452*16+10000:14452*17+10000],np.zeros(14452))
+# %%
+mean_squared_error(agg_df['washerdryer'][14452*16+10000:14452*17+10000],np.zeros(14452), squared=False)
+# %%
+ec_num = 0
+ec_den = 0
+for i in range(len(summed_clusters[1])):
+    ec_num += abs(np.zeros(14452)[i] - agg_df['washerdryer'][14452*16+10000+i])
+    ec_den += agg_df['washerdryer'][14452*16+10000+i]
+
+EC = 1 - (ec_num/(2*ec_den))
+
+EC
+# %%
+np.zeros(14452)
 # %%
 ########## FINAL PLOT ############
 fig, ax = plt.subplots()
@@ -915,3 +1091,6 @@ for k in washerdryer_index_list:
         print(loc)
 
 agg_actual
+# %%
+
+# %%
