@@ -547,15 +547,28 @@ result_final = OMP(x=agg, Dictionary=dictionary, dataframe=df1, maxiter=1000, to
 print('--- %s seconds ---' % (time.time() - start_time))
 # %%
 agg_df = open_pickle('/Users/kayvon/Desktop/agg_df2.pkl')
-agg = agg_df['agg'][14452*16+10000:14452*17+10000]
+agg = agg_df['agg'][14452*14+10000:14452*15+10000]
+# channel1 = np.loadtxt('/Users/kayvon/Downloads/ukdale/house_1/channel_1.dat')
+# channel1 = open_pickle('/Users/kayvon/Desktop/channel1.pkl')
+# save_pickle(channel1, '/Users/kayvon/Desktop/channel1.pkl')
+# %%
+agg_temp = channel1[:,1][1212591:1212591+14452]
+agg = pd.Series(agg_temp)
 # %%
 ind = np.where(agg <= min(agg)+50)[0]
 index = [0]
 for i in np.arange(1,len(ind)):
-    if ind[i] - ind[i-1] >= 50:
+    if ind[i] - ind[i-1] >= 10:
         index.append(ind[i])
 index = index[0:len(index)-1]
 index.append(len(agg))
+
+# for i in np.arange(1, len(index)):
+#     if (index[i] - index[i-1]) < 1200:
+#         continue
+#     else:
+#         index.insert((i), (index[i-1]+1000))
+    
 # %%
 startio = time.time()
 # %%
@@ -600,11 +613,6 @@ for i in np.arange(1,len(selected_boxes)+1):
 #%%
 import copy
 final_boxes1 = copy.deepcopy(final_boxes)
-# %%
-# save_pickle(final_boxes, '/Users/kayvon/Desktop/final_boxes_test2.pkl')
-# final_boxes = open_pickle('/Users/kayvon/Desktop/final_boxes_test2.pkl')
-# final_boxes1 = open_pickle('/Users/kayvon/Desktop/final_boxes_test2.pkl')
-# %%
 
 ts_length = 0
 for i in range(len(final_boxes1)):
@@ -620,7 +628,7 @@ for i in range(len(final_boxes1)):
     for j in range(len(final_boxes1[i])):
         df_final_boxes_full_length[cnt] = final_boxes1[i][j]
         cnt += 1
-# %%
+
 lens = []
 for i in range(len(final_boxes)):
     lens.append(len(final_boxes[i][0]))
@@ -645,47 +653,7 @@ for i in range(len(final_boxes)):
 #         final_boxes[cnt].append(selected_boxes[i])
 #     else:
 #         cnt += 1
-# %%
-agg_boxes = []
-for i in selected_boxes.keys():
-    agg_boxes.extend(selected_boxes[i])
-# %%
-start_time = time.time()
-dictionary = gen_dict2(len(agg), infos=False, boxwidth=200)
-print('--- %s seconds ---' % (time.time() - start_time))
-# %%
-# https://www.cs.technion.ac.il/~ronrubin/Publications/KSVD-OMP-v2.pdf
-# https://gist.github.com/vene/996771
-start_time = time.time()
-gamma, idx = cholesky_omp(D=dictionary,x=agg,m=30)
-print('--- %s seconds ---' % (time.time() - start_time))
 
-agg_approximated = np.zeros(len(agg))
-selected_boxes = pd.DataFrame()
-
-for i in range(len(idx)):
-    temp = np.dot(dictionary[:,idx[i]],gamma[i])
-    agg_approximated += temp
-    selected_boxes[i] = temp
-
-plt.plot(selected_boxes);
-# %%
-# %%
-start_time = time.time()
-sparse_codes = dictlearn.omp_cholesky(agg,dictionary,n_nonzero=30,tol=0.055)
-sparse_approx = dictionary.dot(sparse_codes)
-print('--- %s seconds ---' % (time.time() - start_time))
-#%%
-selected_boxes = pd.DataFrame()
-for i in np.where(sparse_codes[:] != 0)[0]:
-    selected_boxes[i] = np.dot(sparse_codes[i],dictionary[:,i])
-
-plt.plot(selected_boxes);
-
-# %%
-mean_squared_error(agg,total_agg_approx)
-# %%
-mean_squared_error(agg,result_final.RecSignal)
 # %%
 selected_boxes = df_final_boxes
 # %%
@@ -822,7 +790,7 @@ labels = dba_km1.labels_
 
 print('--- %s seconds ---' % (time.time() - start_time))
 # %%
-cdict = {0: 'red', 1: 'blue', 2: 'green'}
+cdict = {0: 'red', 1: 'blue', 2: 'green', 3: 'purple', 4: 'orange'}
 for g in np.unique(labels):
     for i in range(len(dataset_small)):
         plt.plot(dataset_small[i,:,0], label=labels[i] if labels[i] == g else "", color=cdict[labels[i]])
@@ -983,6 +951,143 @@ if len(washerdryer_index_list) != 0:
 # %%
 print('--- %s seconds ---' % (time.time() - startio))
 # %%
+fig, axs = plt.subplots(3, 1)
+fig.set_figheight(10)
+fig.set_figwidth(15)
+
+axs[0].set_title('Actual Aggregate Signal')
+axs[0].set_ylim([-150,3800])
+axs[0].plot(np.arange(0,14452),agg, 'r')
+axs[1].set_title('Cholesky OMP Selected Boxcars')
+for i in range(df_final_boxes_full_length.shape[1]):
+    axs[1].plot(df_final_boxes_full_length.iloc[:,i]);
+axs[2].set_ylim([-150,3800])
+axs[2].set_title('Cholesky OMP Approximation')
+axs[2].plot(total_agg_approx)
+
+for ax in axs.flat:
+    ax.set(xlabel='Samples (1/6 Hz each index)', ylabel='Power (Watts)')
+
+# Hide x labels and tick labels for top plots and y ticks for right plots.
+for ax in axs.flat:
+    ax.label_outer()
+
+# %%
+kettle_omp1 = np.pad(kettle_omp, (0,len(dishwasher_omp) - len(kettle_omp)),mode='constant', constant_values=(0))
+fridgefreezer_omp1 = np.pad(fridgefreezer_omp, (0, len(dishwasher_omp) - len(fridgefreezer_omp)), mode='constant', constant_values=(0))
+microwave_omp1 = np.pad(microwave_omp, (0, len(dishwasher_omp) - len(microwave_omp)), mode='constant', constant_values=(0))
+washerdryer_omp1 = np.pad(washerdryer_omp, (0, len(dishwasher_omp) - len(washerdryer_omp)), mode='constant', constant_values=(0))
+
+fig, axs = plt.subplots(5, 1)
+fig.set_figheight(10)
+fig.set_figwidth(15)
+fig.subplots_adjust(hspace=0.3)
+axs[0].plot(kettle_omp1)
+axs[0].set_title('Kettle')
+axs[1].plot(fridgefreezer_omp1, 'tab:orange')
+axs[1].set_title('Refrigerator')
+axs[2].plot(microwave_omp1, 'tab:green')
+axs[2].set_title('Microwave')
+axs[3].plot(dishwasher_omp, 'tab:red')
+axs[3].set_title('Dishwasher')
+axs[4].plot(washerdryer_omp1, 'tab:purple')
+axs[4].set_title('Washer Dryer')
+
+for ax in axs.flat:
+    ax.set(xlabel='Samples (1/6 Hz each index)', ylabel='Power (Watts)')
+
+# Hide x labels and tick labels for top plots and y ticks for right plots.
+for ax in axs.flat:
+    ax.label_outer()
+# %%
+results = pd.DataFrame(columns=['Kettle', 'Fridge', 'Microwave', 'Dishwasher', 'Washer_Dryer', 'Across_All_Appliances'], index=['MAE', 'RMSE', 'f1-Score', 'EC'])
+# %%
+results.Kettle = [13.98, 128.16, 0.73, 0.77]
+results.Fridge = [25.11, 54.32, 0.74, 0.62]
+results.Microwave = [5.66, 75.82, 0.67, 0.62]
+results.Dishwasher = [19.71, 122.57, 0.67, 0.81]
+results.Washer_Dryer = [23.21, 147.70, 0.67, 0.70]
+results.Across_All_Appliances = [17.53, 105.71, 0.70, 0.70]
+# %%
+resultskettle = pd.DataFrame(columns=['MAE', 'RMSE', 'f1Score'], index=['OMP DTW', 'FHMM', 'CO'])
+resultskettle.MAE = [13.98, 47.86, 71.35]
+resultskettle.RMSE = [128.16, 222.83, 313.18]
+resultskettle.f1Score = [0.73, 0.28, 0.16]
+# %%
+resultsfridge = pd.DataFrame(columns=['MAE', 'RMSE', 'f1Score'], index=['OMP DTW', 'FHMM', 'CO'])
+resultsfridge.MAE = [25.11, 55.88, 76.71]
+resultsfridge.RMSE = [54.32, 71.18, 114.68]
+resultsfridge.f1Score = [0.74, 0.35, 0.54]
+# %%
+resultsmicro = pd.DataFrame(columns=['MAE', 'RMSE', 'f1Score'], index=['OMP DTW', 'FHMM', 'CO'])
+resultsmicro.MAE = [5.66, 168.97, 97.66]
+resultsmicro.RMSE = [75.82, 264.88, 222.46]
+resultsmicro.f1Score = [0.67, 0.02, 0.05]
+
+resultsdish = pd.DataFrame(columns=['MAE', 'RMSE', 'f1Score'], index=['OMP DTW', 'FHMM', 'CO'])
+resultsdish.MAE = [19.71, 79.83, 88.42]
+resultsdish.RMSE = [122.57, 258.98, 266.13]
+resultsdish.f1Score = [0.67, 0.15, 0.06]
+
+resultswasher = pd.DataFrame(columns=['MAE', 'RMSE', 'f1Score'], index=['OMP DTW', 'FHMM', 'CO'])
+resultswasher.MAE = [23.21, 79.95, 116.89]
+resultswasher.RMSE = [147.7, 230.24, 261.02]
+resultswasher.f1Score = [0.67, 0.31, 0.10]
+# %%
+resultsall = pd.DataFrame(columns=['MAE', 'RMSE', 'f1Score'], index=['OMP DTW', 'FHMM', 'CO'])
+resultsall.MAE = [17.53, 86.5, 90.21]
+resultsall.RMSE = [105.71, 209.62, 235.49]
+resultsall.f1Score = [0.70, 0.22, 0.18]
+# %%
+fig, axes = plt.subplots(3, 6, figsize=(20,15))
+# fig.set_figheight(10)
+# fig.set_figwidth(15)
+axes[0, 0].set_ylabel('MAE (Watts)')
+axes[1, 0].set_ylabel('RMSE (Watts)')
+axes[2, 0].set_ylabel('f1-Score')
+axes[0, 0].set_title('Kettle')
+
+for i in range(6):
+    axes[0, i].set_ylim([0, 175])
+
+for i in range(6):
+    axes[1, i].set_ylim([0, 350])
+
+for i in range(6):
+    axes[2, i].set_ylim([0, 1])
+
+sns.barplot(ax=axes[0, 0], x=resultskettle.index, y=resultskettle.MAE.values, palette="Blues_d")
+sns.barplot(ax=axes[1, 0], x=resultskettle.index, y=resultskettle.RMSE.values, palette="Blues_d")
+sns.barplot(ax=axes[2, 0], x=resultskettle.index, y=resultskettle.f1Score.values, palette="Blues_d")
+
+axes[0, 1].set_title('Refrigerator')
+sns.barplot(ax=axes[0, 1], x=resultsfridge.index, y=resultsfridge.MAE.values, palette="Blues_d")
+sns.barplot(ax=axes[1, 1], x=resultsfridge.index, y=resultsfridge.RMSE.values, palette="Blues_d")
+sns.barplot(ax=axes[2, 1], x=resultsfridge.index, y=resultsfridge.f1Score.values, palette="Blues_d")
+
+axes[0, 2].set_title('Microwave')
+sns.barplot(ax=axes[0, 2], x=resultsmicro.index, y=resultsmicro.MAE.values, palette="Blues_d")
+sns.barplot(ax=axes[1, 2], x=resultsmicro.index, y=resultsmicro.RMSE.values, palette="Blues_d")
+sns.barplot(ax=axes[2, 2], x=resultsmicro.index, y=resultsmicro.f1Score.values, palette="Blues_d")
+
+axes[0, 3].set_title('Dishwasher')
+sns.barplot(ax=axes[0, 3], x=resultsdish.index, y=resultsdish.MAE.values, palette="Blues_d")
+sns.barplot(ax=axes[1, 3], x=resultsdish.index, y=resultsdish.RMSE.values, palette="Blues_d")
+sns.barplot(ax=axes[2, 3], x=resultsdish.index, y=resultsdish.f1Score.values, palette="Blues_d")
+
+axes[0, 4].set_title('Washer Dryer')
+sns.barplot(ax=axes[0, 4], x=resultswasher.index, y=resultswasher.MAE.values, palette="Blues_d")
+sns.barplot(ax=axes[1, 4], x=resultswasher.index, y=resultswasher.RMSE.values, palette="Blues_d")
+sns.barplot(ax=axes[2, 4], x=resultswasher.index, y=resultswasher.f1Score.values, palette="Blues_d")
+
+axes[0, 5].set_title('Across All Appliances')
+sns.barplot(ax=axes[0, 5], x=resultsall.index, y=resultsall.MAE.values, palette="Blues_d")
+sns.barplot(ax=axes[1, 5], x=resultsall.index, y=resultsall.RMSE.values, palette="Blues_d")
+sns.barplot(ax=axes[2, 5], x=resultsall.index, y=resultsall.f1Score.values, palette="Blues_d")
+
+
+
+# %%
 for j in [0,-1]:
     for i in dishwasher_index_list_final:
         print(np.where(df_final_boxes_full_length.iloc[:,i]>=100)[0][0])
@@ -1091,6 +1196,3 @@ for k in washerdryer_index_list:
         print(loc)
 
 agg_actual
-# %%
-
-# %%
