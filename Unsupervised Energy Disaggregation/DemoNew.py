@@ -35,284 +35,6 @@ def open_pickle(file_name):
         obj = dill.load(handle)
     return obj
 
-def norm2(x):
-    """Compute a l2-norm."""
-    return np.linalg.norm(x) / np.sqrt(len(x))
-
-class Result():
-    """Aggregate the result from the OMP algorithm.
-
-
-    Args:
-        -- dataframe : df with all the individual appliances sample
-        -- signal : simply the full input signal;
-        -- maxiter : number maximum of iteration befroe the algorithm stops;
-        -- ztol : error tolerance;
-        -- S : sparsity threshold (needs to be deduce empirically);
-        -- coef_select : nonzero coefficients in "signal =~ coef * Dictionary";
-        -- xmax : maximum value of the signal;
-        -- k_select : K strongest atoms;
-        -- RecSignal : reconstituted signal;
-        -- err : relative l2 error;
-        -- D : Dictionary;
-        -- k_index_nonzero : index in the dictionary for the atoms with
-                                nonzero coefficents.
-
-    """
-
-    def __init__(self, **kwargs):
-
-        # Input
-        self.dataframe = None
-        self.signal = None
-        self.maxiter = None
-        self.tol = None
-        self.ztol = None
-        self.S = None
-
-        # Output
-        self.coef_select = None
-        self.xmax = None
-        self.k_select = None
-        self.RecSignal = None
-        self.err = None
-        self.resCovk = None
-
-        # Combined output
-        self.Kcoef = None
-        self.nbatoms = None
-        self.full_y = None
-
-        # Cluster GMM
-        self.REFIND = None
-        # self.optGMMcomponents = None
-
-        # Community DETECTION
-        self.ComDict = None
-        self.Graph = None
-        self.partition = None
-
-        # After labelling process
-        self.y_hat_dict = None
-        self.y_truth_dict = None
-
-    def update(self, dataframe, signal,
-               maxiter, tol, ztol, S,
-               coef_select, xmax, k_select, RecSignal, k_index_nonzero,
-               err, resCovk,
-               Kcoef, nbatoms, full_y,
-               REFIND, optGMMcomponents,
-               ComDict, Graph, partition,
-               y_hat_dict, y_truth_dict):
-        '''Update the solution attributes.
-        '''
-
-        self.dataframe = dataframe
-        self.signal = signal
-        self.maxiter = maxiter
-        self.tol = tol
-        self.ztol = ztol
-        self.S = S
-        self.coef_select = coef_select
-        self.xmax = xmax
-        self.k_select = k_select
-        self.RecSignal = RecSignal
-        self.err = err
-        self.resCovk = resCovk
-        self.k_index_nonzero = k_index_nonzero
-
-        self.Kcoef = Kcoef
-        self.nbatoms = nbatoms
-        self.full_y = full_y
-
-        self.REFIND = REFIND
-        self.optGMMcomponents = optGMMcomponents
-
-        self.ComDict = ComDict
-        self.Graph = Graph
-        self.partition = partition
-
-        self.y_hat_dict = y_hat_dict
-        self.y_truth_dict = y_truth_dict
-
-def rlencode(x, dropna=False):
-    """
-    Run length encoding.
-    Based on http://stackoverflow.com/a/32681075, which is based on the rle
-    function from R.
-
-    Parameters
-    ----------
-    x : 1D array_like
-        Input array to encode
-    dropna: bool, optional
-        Drop all runs of NaNs.
-
-    Returns
-    -------
-    start positions, run lengths, run values
-
-    """
-    where = np.flatnonzero
-    x = np.asarray(x)
-    n = len(x)
-    if n == 0:
-        return (np.array([], dtype=int),
-                np.array([], dtype=int),
-                np.array([], dtype=x.dtype))
-
-    starts = np.r_[0, where(~np.isclose(x[1:], x[:-1], equal_nan=True)) + 1]
-    lengths = np.diff(np.r_[starts, n])
-    
-    values = x[starts]
-
-
-    if dropna:
-        mask = ~np.isnan(values)
-        starts, lengths, values = starts[mask], lengths[mask], values[mask]
-
-    return starts, lengths, values
-
-def OMP(x, Dictionary, dataframe,
-        maxiter=1000, ztol=1e-12, tol=1e-10, S=100000,
-        threshold_min_power=0):
-    """Compute the Orthogonal Matching Pursuit.
-
-    Arguments:
-        x -- aggregated load signal
-        Dictionary -- Large collection of atoms, each column is an atom
-        segment -- Array [start, stop]
-        maxiter -- Maximum number of iteration, each iteration the algorithm
-                   select an atom 'kj' and update the residual 'Rj'
-                   (default=100).
-        S -- Sparsity convoyed through a maximum number of coefficient
-                (default=1000)
-        ztol -- tolerance on the maximum residual covariance allowed,
-                i.e. iterations breaks if threshold is achieved
-        tol -- convergence tolerance, breaks if the relative error is than
-                tol * norm2(x)
-
-
-    Returns:
-        Set of active atoms 'k' with their respective coefficient 'coef'
-    """
-    # -------------- Check structure args -------------------------------------
-
-    if not type(x).__module__ == np.__name__:  # ifnot numpy matrix
-        x = x.values
-        x = x[:, 0]  # denesting ndarray
-
-    # -------------- Initialization -------------------------------------------
-
-    xmax = np.max(x)                            # normalizing the signal
-    x = x / xmax
-
-    D = Dictionary
-
-    k_index = []                                # vector for the selected atoms
-    coef = np.zeros(D.shape[1], dtype=float)    # coefficient vector
-    R = x                                       # residual vector for j=1
-
-    xnorm = norm2(x)                            # compute relative err
-    err = np.zeros(maxiter, dtype=float)        # relative err vector
-
-    result = Result()
-
-    # ------------- Main interation -------------------------------------------
-
-    for j in range(maxiter):
-        # Equation (3) in Arberet et al.
-        Rcov = np.dot(D.T, R)       # p-correlation with residual at j=it
-        k = np.argmax(Rcov)         # atom indices maximizing p-correlation
-
-        if k not in k_index:        # if the selected atom is not already
-            k_index.append(k)       # in the vector, then append it
-
-        # Equation (2) in Arberet et al.
-        coefi, _ = sci.nnls(D[:, k_index], x)   # non-negative l.s. solver
-        coef[k_index] = coefi
-
-        R = x - np.dot(D[:, k_index], coefi)    # new residual computed
-        err[j] = norm2(R)                       # errors for each iteration
-        #print(j)
-
-        # TODO Delete certain type of thresholds
-        # Stopping criteria :
-        resCovk = Rcov[k]
-        if resCovk < ztol:
-            # print('Stopping criteria: all residual covariances below the threshold')
-            break
-
-        if err[j] < tol:
-            # print('Stopping criteria: Convergence tolerance achieved')
-            break
-
-        if len(k_index) >= S:
-            # print('\nLimit on selected atoms achieved')
-            break
-
-    # ------------- Additional Atom Selection ---------------------------------
-
-    # Remove the zero coefficients from the support vector
-    coef_select = coef[k_index]
-    List = list(np.nonzero(coef_select)[0])
-    k_index_nonzero = [k_index[i] for i in List]
-
-    # Remove K strongest atom
-    k_index_select = []
-
-    for i, ll in enumerate(k_index_nonzero):
-        val_rle_output = rlencode(D[:, ll] * coef[ll] * xmax)[2]
-
-        if threshold_min_power < val_rle_output.max():
-            k_index_select.append(ll)
-        else:
-            continue
-
-    # ------------- Preparing Result Outputs ----------------------------------
-
-    signal = x * xmax
-
-    # -------- Output (supplementary) -------- #
-
-    coef_select = coef[k_index_select]
-    k_select = D[:, k_index_select]
-    RecSignal = np.sum(k_select * coef_select, axis=1) * xmax
-
-    # COMBINED output
-    Kcoef = k_select * coef_select * xmax
-    nbatoms = k_select.shape[1]
-    full_y = signal
-
-    # TO DO clear this and delete update ... 
-
-    REFIND = None  # free space for the labels from the clustering method
-    optGMMcomponents = None
-    ComDict = None  # free space for community detection
-    Graph = None
-    partition = None
-
-    y_hat_dict = None
-    y_truth_dict = None
-
-    # RESULT output update
-    result.update(dataframe, signal,
-                  maxiter, tol, ztol, S,
-                  coef_select, xmax, k_select, RecSignal, k_index_select,
-                  err, resCovk,
-                  Kcoef, nbatoms, full_y,
-                  REFIND, optGMMcomponents,
-                  ComDict, Graph, partition,
-                  y_hat_dict, y_truth_dict)
-
-    return result
-
-def Standardize(x):
-    mean = np.mean(x)
-    standard_deviation = np.std(x)
-
-    return (x - mean) / standard_deviation
-
 def Heaviside(x, a):
     """Compute a Heaviside function."""
     y = (np.sign(x - a) + 1) / 2
@@ -377,6 +99,14 @@ def gen_dict2(tslength, infos=False, boxwidth=120):
         return X, boxcarinfos
 
 def cholesky_omp(D, x, m, eps=None):
+    ''' Cholesky OMP Approximation
+    Arguments:
+        D: Dictionary
+        x: signal
+        m: # of boxcars for stopping criteria
+        eps: residual for stopping criteria
+            Use m or eps; if eps is not None, m won't be used
+    '''
     if eps == None:
         stopping_condition = lambda: it == m  # len(idx) == m
     else:
@@ -496,7 +226,7 @@ omp_smooth['fridgefreezer'] =  fridgefreezer_omp
 omp_smooth['kettle'] = kettle_omp
 omp_smooth['microwave'] = microwave_omp
 #%%
-########## NOISY AGGREGATE ###########
+########## SYNTHETIC NOISY AGGREGATE ###########
 col = ['washerdryer','dishwasher','fridgefreezer','kettle','microwave']
 data = np.zeros((2,len(col)),dtype=int)
 agg_actual = pd.DataFrame(data =data,columns=col)
@@ -548,12 +278,6 @@ print('--- %s seconds ---' % (time.time() - start_time))
 # %%
 agg_df = open_pickle('/Users/kayvon/Desktop/agg_df2.pkl')
 agg = agg_df['agg'][14452*14+10000:14452*15+10000]
-# channel1 = np.loadtxt('/Users/kayvon/Downloads/ukdale/house_1/channel_1.dat')
-# channel1 = open_pickle('/Users/kayvon/Desktop/channel1.pkl')
-# save_pickle(channel1, '/Users/kayvon/Desktop/channel1.pkl')
-# %%
-agg_temp = channel1[:,1][1212591:1212591+14452]
-agg = pd.Series(agg_temp)
 # %%
 ind = np.where(agg <= min(agg)+50)[0]
 index = [0]
@@ -562,12 +286,6 @@ for i in np.arange(1,len(ind)):
         index.append(ind[i])
 index = index[0:len(index)-1]
 index.append(len(agg))
-
-# for i in np.arange(1, len(index)):
-#     if (index[i] - index[i-1]) < 1200:
-#         continue
-#     else:
-#         index.insert((i), (index[i-1]+1000))
     
 # %%
 startio = time.time()
@@ -644,15 +362,6 @@ for i in range(len(final_boxes)):
     for j in range(len(final_boxes[i])):
         df_final_boxes[cnt] = final_boxes[i][j]
         cnt += 1
-# %%
-# final_boxes = {}
-# cnt = 0
-# for i in range(len(selected_boxes.keys())-1):
-#     final_boxes[cnt] = []
-#     if len(selected_boxes[i]) == len(selected_boxes[i+1]):
-#         final_boxes[cnt].append(selected_boxes[i])
-#     else:
-#         cnt += 1
 
 # %%
 selected_boxes = df_final_boxes
@@ -744,25 +453,6 @@ for k in range(len(fridgefreezer_index_list)):
 for element in type1_indexes:
     if element in indexes:
         indexes.remove(element)
-# %%
-# fig, ax = plt.subplots()
-# for i in indexes:
-#     ax.plot(selected_boxes.iloc[:,i])
-
-# plt.ylim([0,max(agg)])
-# plt.show()
-
-# leftover = np.zeros(len(agg))
-# for i in indexes:
-#     temp = selected_boxes.iloc[:,i]
-#     leftover += temp
-
-# fig, ax = plt.subplots()
-
-# ax.plot(leftover, label='Leftover')
-# plt.ylim([0,max(agg)])
-# plt.legend()
-# plt.show()
 
 # %%
 start_time = time.time()
@@ -797,9 +487,6 @@ for g in np.unique(labels):
         plt.ylim([-2000,max(agg)])
         plt.legend()
 # %%
-# right after labeling go back with indexes and find actual positions of 
-# boxes for dishwasher index list so that the boxes arent on top of each other
-
 clusters = {}
 for g in np.unique(labels):
     clusters[g] = []
@@ -879,16 +566,6 @@ for g in np.unique(labels):
                 summed_clusters[g] += temp
 
 # %%
-# summed_clusters = {}
-# for g in np.unique(labels):
-#     summed_clusters[g] = np.zeros(dataset_small.shape[1])
-#     for l in np.where(labels == g):
-#         for i in range(len(l)):
-#             temp = dataset_small[l[i],:,0]
-#             # print(np.shape(temp))
-#             summed_clusters[g] += temp
-
-# %%
 dishwasher_index_list = []
 for i in summed_clusters.keys():
     dtw_score_dishwasher = dtw(summed_clusters[i], dishwasher_omp)
@@ -917,13 +594,6 @@ if len(dishwasher_index_list) != 0:
         plt.ylim([0,max(agg)])
         plt.legend()
 # %%
-# final_summed_clusters = np.zeros(summed_clusters[0].shape[0])
-# for i in summed_clusters.keys():
-#     if i == dishwasher_index_list:
-#         continue
-#     else:
-#         final_summed_clusters += summed_clusters[i]
-
 washer0_start = np.where(summed_washer_clusters[0])[0][0]
 washer1_start = np.where(summed_washer_clusters[1])[0][0]
 
@@ -950,7 +620,20 @@ if len(washerdryer_index_list) != 0:
         washerdryer_index_list_final.extend(cluster2)
 # %%
 print('--- %s seconds ---' % (time.time() - startio))
+
+
+
+
+
+
+
+
+
+
+
+## You don't need the rest of this
 # %%
+
 fig, axs = plt.subplots(3, 1)
 fig.set_figheight(10)
 fig.set_figwidth(15)
