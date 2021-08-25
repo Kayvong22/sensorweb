@@ -1,4 +1,6 @@
 #! usr/bin/env python3
+# This code was run as a python notebook where each "# %%" starts a new cell
+
 # %%
 import warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -406,14 +408,16 @@ def Standardize(x):
 
 # %%
 # Preprocessing of individual appliance instances
+
+# Generate Dictionary - this takes at least 20 minutes and take up ~7Gb
+dictionary = gen_dict2(tslength, infos=False, boxwidth=120)
+
 # These files are included in the Github repository, just change the path to where you have them saved
 washerdryer = open_pickle('/Users/kayvon/Desktop/washerdryer.pkl')
 dishwasher = open_pickle('/Users/kayvon/Desktop/dishwasher.pkl')
 fridgefreezer = open_pickle('/Users/kayvon/Desktop/fridgefreezer.pkl')
 kettle = open_pickle('/Users/kayvon/Desktop/kettle.pkl')
 microwave = open_pickle('/Users/kayvon/Desktop/microwave.pkl')
-
-dictionary = open_pickle('/Users/kayvon/Desktop/dictionary2000.pkl')
 
 washerdryer = np.array(washerdryer)
 dishwasher = np.array(dishwasher)
